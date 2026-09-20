@@ -1,9 +1,10 @@
-name: CI - Test and Build Docker Image
+name: CI - Test, Build, Push and Update Kubernetes
 
 on:
   push:
     branches:
       - main
+
   pull_request:
     branches:
       - main
@@ -36,6 +37,9 @@ jobs:
 
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
+    outputs:
+      image_tag: ${{ steps.image.outputs.tag }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -54,10 +58,64 @@ jobs:
         run: |
           docker build \
             -t ${{ secrets.DOCKERHUB_USERNAME }}/express-api:${{ steps.image.outputs.tag }} \
-            -t ${{ secrets.DOCKERHUB_USERNAME }}/express-api:latest \
             .
 
       - name: Push Docker image
         run: |
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/express-api:${{ steps.image.outputs.tag }}
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/express-api:latest
+          docker push \
+            ${{ secrets.DOCKERHUB_USERNAME }}/express-api:${{ steps.image.outputs.tag }}
+
+  update-kubernetes:
+    name: Update Kubernetes Repository
+    runs-on: ubuntu-latest
+    needs: docker
+
+    steps:
+      - name: Checkout Kubernetes repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/k8s-infrastructure
+          token: ${{ secrets.K8S_REPO_TOKEN }}
+          path: k8s-infrastructure
+
+      - name: Update Docker image tag
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          IMAGE_TAG: ${{ needs.docker.outputs.image_tag }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          file = Path("k8s-infrastructure/environments/production/deployment.yaml")
+
+          text = file.read_text()
+
+          image = f"{os.environ['DOCKERHUB_USERNAME']}/express-api:{os.environ['IMAGE_TAG']}"
+
+          text = re.sub(
+              r"image:\s*\S+",
+              f"image: {image}",
+              text,
+              count=1
+          )
+
+          file.write_text(text)
+          PY
+
+      - name: Commit Kubernetes change
+        working-directory: k8s-infrastructure
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add environments/production/deployment.yaml
+
+          git diff --cached --quiet || git commit \
+            -m "Update express-api image to ${{ needs.docker.outputs.image_tag }}"
+
+      - name: Push Kubernetes change
+        working-directory: k8s-infrastructure
+        run: |
+          git push
