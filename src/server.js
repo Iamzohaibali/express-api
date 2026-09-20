@@ -9,7 +9,7 @@ app.use(express.json());
 // Root endpoint
 app.get("/", (req, res) => {
   res.json({
-    message: "Hello from Express API testing I expr djfhj kjthjhtgj",
+    message: "Hello from Express API. It has been updated.",
     version: "1.0.0",
   });
 });
